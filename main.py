@@ -121,9 +121,13 @@ def auto_reset_midnight_loop():
 threading.Thread(target=auto_reset_midnight_loop, daemon=True).start()
 
 # Scheduler for sending polls automatically
+# =====================================================================
+# 📊 GLOBAL POLL SCHEDULER MANAGER (Authorized Group & Admin Check Override)
+# =====================================================================
 def global_poll_manager():
     while True:
         try:
+            # Database se sabhi active groups ki list nikalna
             all_groups = list(groups_col.find())
             current_now = time.time()
 
@@ -137,7 +141,10 @@ def global_poll_manager():
                 auto_delete = group.get("auto_delete", 1)
                 last_warning_time = group.get("last_warning_time", 0)
 
+                # Time interval check (Kya naya poll bhejne ka samay ho gaya hai?)
                 if current_now - last_sent_time >= interval:
+                    
+                    # 🔍 1. Live Telegram Admin Status Verification
                     is_bot_admin = False
                     try:
                         bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
@@ -146,54 +153,85 @@ def global_poll_manager():
                     except Exception:
                         is_bot_admin = False
 
+                    # 🚫 2. Agar bot admin nahi hai, toh poll skip karega aur warning alert bhejega
                     if not is_bot_admin:
-                        warning_interval = 43200
+                        warning_interval = 43200  # 12 ghante me ek baar alert
                         if current_now - last_warning_time >= warning_interval:
                             try:
-                                bot.send_message(chat_id=chat_id, text="⚠️ **ALERT!**\n\nTo send polls, please re-promote me to Admin and grant permissions.", parse_mode="Markdown")
+                                bot.send_message(
+                                    chat_id=chat_id, 
+                                    text="⚠️ **ALERT!**\n\nMain is group me automated quizzes nahi bhej sakta kyunki mere paas **Admin Rights** nahi hain. Kripya mujhe admin banayein aur permissions grant karein.", 
+                                    parse_mode="Markdown"
+                                )
                                 groups_col.update_one({"chat_id": chat_id}, {"$set": {"last_warning_time": current_now}})
                             except Exception: pass
+                        
+                        # Timer ko update kar dete hain taaki har 5 second me retry na kare
                         groups_col.update_one({"chat_id": chat_id}, {"$set": {"last_sent_time": current_now}})
                         continue
 
+                    # 🗑️ 3. Puraana poll automatically delete karna (agar settings me ON ho)
                     if last_poll_id is not None and auto_delete == 1:
                         try:
                             bot.delete_message(chat_id=chat_id, message_id=last_poll_id)
                         except Exception: pass
 
+                    # 🌐 4. Language selection filter
                     filtered_quiz = [q for q in QUIZ_LIST if q.get("lang", "hindi") == language]
-                    if not filtered_quiz: filtered_quiz = QUIZ_LIST
-                    if current_index >= len(filtered_quiz): current_index = 0
+                    if not filtered_quiz: 
+                        filtered_quiz = QUIZ_LIST
+                    
+                    if current_index >= len(filtered_quiz): 
+                        current_index = 0
 
                     quiz = filtered_quiz[current_index]
                     explanation_text = truncate_explanation(quiz.get("explanation", None), max_length=100)
                     
+                    # 🚀 5. Native Telegram Quiz Poll Dispatcher
                     try:
                         sent_message = bot.send_poll(
-                            chat_id=chat_id, question=quiz["question"], options=quiz["options"],
-                            type="quiz", correct_option_id=quiz["correct_id"], is_anonymous=False, explanation=explanation_text
+                            chat_id=chat_id, 
+                            question=quiz["question"], 
+                            options=quiz["options"],
+                            type="quiz", 
+                            correct_option_id=quiz["correct_id"], 
+                            is_anonymous=False, 
+                            explanation=explanation_text
                         )
+                        
+                        # Unique Poll ID ko database map me record karna live scoring ke liye
                         poll_mapping_col.insert_one({
-                            "poll_id": str(sent_message.poll.id), "chat_id": chat_id,
-                            "correct_id": quiz["correct_id"], "creation_time": time.time()
+                            "poll_id": str(sent_message.poll.id), 
+                            "chat_id": chat_id,
+                            "correct_id": quiz["correct_id"], 
+                            "creation_time": time.time()
                         })
 
+                        # Next index calculator aur timer update loop
                         new_index = (current_index + 1) % len(filtered_quiz)
                         groups_col.update_one({"chat_id": chat_id}, {
-                            "$set": {"current_index": new_index, "last_poll_id": sent_message.message_id, "last_sent_time": current_now}
+                            "$set": {
+                                "current_index": new_index, 
+                                "last_poll_id": sent_message.message_id, 
+                                "last_sent_time": current_now
+                            }
                         })
+                        print(f"✅ Auto-Poll successfully sent to group ID: {chat_id}")
+
                     except Exception as e:
                         error_str = str(e).lower()
+                        # Agar bot ko group se nikal diya gaya hai toh record DB se saaf karein
                         if "bot was kicked" in error_str or "chat not found" in error_str or "bot is not a member" in error_str:
                             groups_col.delete_one({"chat_id": chat_id})
+                            print(f"🗑️ Removed group {chat_id} from database (Bot left/kicked)")
                         else:
                             groups_col.update_one({"chat_id": chat_id}, {"$set": {"last_sent_time": current_now}})
+                            
         except Exception as e:
-            print(f"❌ Database loop error: {e}")
-        time.sleep(5)
-
-threading.Thread(target=global_poll_manager, daemon=True).start()
-
+            print(f"❌ Database global loop error: {e}")
+        
+        time.sleep(5) # Har 5 second me database scan pipeline refresh hogi
+        
 # Config layout renderers
 def get_settings_markup(chat_id):
     res = groups_col.find_one({"chat_id": chat_id})
@@ -654,8 +692,16 @@ def handle_promote_command(message):
         except Exception as e: bot.reply_to(message, f"Error: {e}")
 
 # 💾 MESSAGE RATE LIMITER MIDDLEWARE 
+# =====================================================================
+# 💾 🤖 AUTOMATIC USER TRACKER & DAILY TEXT LIMITER (Fixed Private Chat Bypass)
+# =====================================================================
 @bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'video', 'sticker', 'document', 'voice', 'audio', 'animation'])
 def track_save_and_limit_users(message):
+    # Private chat ko block nahi karega, commands chalne dega
+    if message.chat.type == 'private':
+        return
+
+    # Sirf aur sirf .env wale SUPPORT_GROUP_ID ke andar hi limit check karega
     if SUPPORT_GROUP_ID and message.chat.id == SUPPORT_GROUP_ID:
         if message.from_user and not message.from_user.is_bot:
             u_id = message.from_user.id
@@ -667,12 +713,15 @@ def track_save_and_limit_users(message):
             
             apply_limit = False
             if not is_core_owner:
-                if is_bot_promoted_admin == 1: apply_limit = True
+                if is_bot_promoted_admin == 1: 
+                    apply_limit = True
                 else:
                     try:
                         member = bot.get_chat_member(SUPPORT_GROUP_ID, u_id)
-                        if member.status not in ['creator', 'administrator']: apply_limit = True
-                    except Exception: apply_limit = True
+                        if member.status not in ['creator', 'administrator']: 
+                            apply_limit = True
+                    except Exception: 
+                        apply_limit = True
 
             if apply_limit and current_count >= DAILY_MSG_LIMIT:
                 try:
@@ -689,15 +738,85 @@ def track_save_and_limit_users(message):
                 upsert=True
             )
 
+# =====================================================================
+# 💾 🤖 GLOBAL USER DB TRACKER MIDDLEWARE (Crash & Bypass Proof)
+# =====================================================================
 @bot.middleware_handler(update_types=['message'])
 def track_and_save_users(bot_instance, message):
-    if SUPPORT_GROUP_ID and message.chat.id == SUPPORT_GROUP_ID:
-        if message.from_user and not message.from_user.is_bot:
-            users_col.update_one(
-                {"user_id": message.from_user.id},
-                {"$set": {"user_name": message.from_user.first_name, "username": message.from_user.username}},
+    # Agar user valid hai aur bot nahi hai, toh database me save karega (chahhe chat private ho ya group)
+    if message.from_user and not message.from_user.is_bot:
+        users_col.update_one(
+            {"user_id": message.from_user.id},
+            {"$set": {"user_name": message.from_user.first_name, "username": message.from_user.username}},
+            upsert=True
+        )
+
+# =====================================================================
+# 🤖 GROUP JOIN/LEAVE TRACKER (Instant 1st Poll Trigger Enabled)
+# =====================================================================
+@bot.my_chat_member_handler()
+def handle_left_or_joined(my_chat_member):
+    new_status = my_chat_member.new_chat_member.status
+    old_status = my_chat_member.old_chat_member.status
+    chat_id = my_chat_member.chat.id
+    chat_title = my_chat_member.chat.title
+    
+    # 🎯 Jab bot ko group me add kiya jaye ya promote karke ADMIN banaya jaye
+    if new_status in ["administrator", "member"]:
+        group_exists = groups_col.find_one({"chat_id": chat_id})
+        
+        # Agar group DB me nahi hai ya bot pehle left karke dubara aaya hai
+        if not group_exists or old_status in ["left", "kicked"]:
+            # `last_sent_time` ko 0 set kar rahe hain taaki scheduler ise turant pick kare
+            groups_col.update_one(
+                {"chat_id": chat_id},
+                {"$set": {
+                    "chat_id": chat_id,
+                    "current_index": 0,
+                    "last_poll_id": None,
+                    "last_sent_time": 0,  # 👈 0 hone se timer instantly trigger hoga
+                    "language": "hindi",
+                    "interval": 1800,
+                    "auto_delete": 1,
+                    "last_warning_time": 0
+                }},
                 upsert=True
             )
+            
+            # Welcome Message sending logic
+            group_text = (
+                f"🌟 *Hey everyone,* I'm poll bot, Thanks for the invite 💖\n\n"
+                f"🎉 *Joined Group Successfully!*\n"
+                f"📢 Automated quizzes have been activated for this group.\n\n"
+                f"🚀 *How to Start Quizzes Instantly:*\n"
+                f"1. Mujhe is group ka **Admin** banayein.\n"
+                f"2. Muje *Manage Polls* aur *Delete Messages* ki permission dein.\n"
+                f"3. Jaise hi main Admin banunga, pehla quiz **turant** bhej diya jayega!"
+            )
+            
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton(text="✨ ᴀᴅᴅ ᴍᴇ ɪɴ ʏᴏᴜʀ ɢʀᴏᴜᴘ", url=f"https://t.me{BOT_USERNAME}?startgroup=true"))
+            
+            try:
+                bot.send_message(chat_id=chat_id, text=group_text, reply_markup=markup, parse_mode="Markdown")
+            except Exception: pass
+
+    # 🎯 Agar bot ko pehle se add group me ab ADMIN bana diya gaya hai
+    if new_status == "administrator" and old_status != "administrator":
+        # `last_sent_time` ko fir se reset karenge taaki Admin bante hi instantly poll chala jaye
+        groups_col.update_one(
+            {"chat_id": chat_id},
+            {"$set": {"last_sent_time": 0}} # 🚀 Instant Poll Trigger!
+        )
+        try:
+            bot.send_message(chat_id=chat_id, text="✅ **Admin Rights Detected!** Aapka pehla automated quiz agle 5-10 seconds me aa raha hai... 🚀")
+        except Exception: pass
+
+    elif new_status in ["left", "kicked"]:
+        # Bot ko group se nikalne par database clean karein
+        groups_col.delete_one({"chat_id": chat_id})
+        daily_scores_col.delete_many({"chat_id": chat_id})
+        
 
 # 🚀 Webhook server using Flask
 from flask import Flask, request
