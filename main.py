@@ -386,7 +386,7 @@ def send_all_leaderboards(manual=False):
     IST = pytz.timezone('Asia/Kolkata')
     now = datetime.now(IST)
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton(text="✨ ᴀᴅᴅ ᴍᴇ ɪɴ ʏᴏᴜʀ ɢʀᴏᴜᴘ", url=f"https://t.me/{BOT_USERNAME}?startgroup=true"))
+    markup.add(InlineKeyboardButton(text="✨ ᴀᴅᴅ ᴍᴇ ɪɴ ʏᴏᴜʀ ɢʀᴏᴜᴘ", url=f"https://t.me{BOT_USERNAME}?startgroup=true"))
     
     res_time = bot_settings_col.find_one({"key": "leaderboard_time"})
     db_time = res_time["value"] if res_time else "22:00"
@@ -404,7 +404,7 @@ def send_all_leaderboards(manual=False):
             if (correct + wrong) > 0:
                 calculated_leaderboard.append((final_score, doc.get("user_name", "User"), correct, wrong))
         
-        calculated_leaderboard.sort(key=lambda x: x[0], reverse=True)
+        calculated_leaderboard.sort(key=lambda x: x, reverse=True)
         top_20 = calculated_leaderboard[:20]
         
         lb_text = "🏆 *Result [Top 20 user's Leaderboard]*\n---------------------------------------\n"
@@ -417,8 +417,7 @@ def send_all_leaderboards(manual=False):
                 display_score = f"{score:.1f}" if score % 0.5 != 0 else f"{int(score)}"
                 lb_text += f"{medal} *{name}*\nRight: **{correct}** ✅ | Wrong: **{wrong}** ❌\nScore: **{display_score}** Marks\n---------------------------------------\n"
         else:
-            lb_text += "⚠️ No users participated in the quiz today.\n---------------------------------------
-"
+            lb_text += "⚠️ No users participated in the quiz today.\n---------------------------------------\n"
             
         lb_text += "\n🎯 Amazing effort! Use `/myscore` command anytime."
         try:
@@ -428,6 +427,7 @@ def send_all_leaderboards(manual=False):
         
     daily_scores_col.delete_many({})
     poll_mapping_col.delete_many({})
+    
 
 def daily_leaderboard_scheduler():
     has_sent_today = False
