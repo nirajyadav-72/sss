@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 import pytz
 import telebot
+import certifi
 from telebot import apihelper
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
@@ -60,8 +61,14 @@ if SUPPORT_GROUP_ID:
     except ValueError: SUPPORT_GROUP_ID = None
 
 # MongoDB Initialisation
+# main.py ke MongoDB Setup block ko isse badlein:
+
 if MONGO_URI:
-    client = MongoClient(MONGO_URI, tls=True, tlsAllowInvalidCertificates=True)
+    client = MongoClient(
+        MONGO_URI,
+        tls=True,
+        tlsCAFile=certifi.where() # Yeh line Python 3.14 ko valid secure certificate degi
+    )
     db = client["quiz_bot_db"]
     groups_col = db["groups"]
     users_col = db["users"]
@@ -71,6 +78,7 @@ if MONGO_URI:
     print("✅ MongoDB Database Connected Successfully!")
 else:
     raise ValueError("MONGO_URI nahi mila! Check your variables.")
+    
 
 if bot_settings_col.count_documents({"key": "leaderboard_time"}) == 0:
     bot_settings_col.insert_one({"key": "leaderboard_time", "value": "22:00"})
